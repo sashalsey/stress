@@ -28,16 +28,16 @@ class ForwardSolve:
         self.nu = 0.3
 
         # thermal properties
-        self.T_0, self.T_1 = 300.0, 1668.0 # atmospheric temperature, heating temperature
+        self.T_0, self.T_1 = 300.0, 2000.0 # atmospheric temperature, heating temperature
         self.k_0, self.k_1 = 0.026, 17.0 # thermal conduction coeff of air, titanium
         self.alpha_0, self.alpha_1 = 2e-3, 8e-6 # linear thermal expansion coeff of air, titanium
         self.h = 100.0 # thermal convection coeff
         self.cp_0, self.cp_1 = 1e3, 500 # coeff specific heat capacity of air, titanium
         self.rho_material = 4500.0
         self.t_heat = 2.0 # time between deposit and next layer
-        self.dt = 0.5 # timestep for t_heat
-        self.t_cool = 60.0 # time left from last deposit to infinity (like extra cooling down)
-        self.dt2 = 1.0 # timestep for t_cool
+        self.dt = 1.0 # timestep for t_heat
+        # self.t_cool = 200.0 # time left from last deposit to infinity (like extra cooling down)
+        # self.dt2 = 10.0 # timestep for t_cool
         
         # pseudo-density functional
         self.beta = beta  # heaviside projection paramesteepnesster
@@ -192,20 +192,16 @@ class ForwardSolve:
             self.T_ext = fd.Constant(500)
 
             plastic = 0.0 #self.yieldstress / self.E_1
-
             self.strainincrement.interpolate(fd.Constant(0))
-            # self.xnew.interpolate(fd.Constant(0))
-            # self.xold.interpolate(fd.Constant(0))
 
-            time_steps = []
-            max_temps = []
-            count = 0.0
-            time_steps.append(count)
-            max_temps.append(np.max(self.T_n.vector().get_local()))
-            # print(f"Initial setting: count {count} max temp {np.max(self.T_n.vector().get_local()):.2f}")
+            Id = fd.Identity(self.mesh.geometric_dimension())
+            def epsilon(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
+            def sigma(u): return lambda_ * fd.div(u) * Id + 2 * mu * epsilon(u)
+
+            # u_t = fd.TrialFunction(self.displace)
+            # v_t = fd.TestFunction(self.displace)
             
             for i in range(n):
-                # print("Layer ", i)
                 layer_height_dep = layer_height * (i + 1)
                 k = 1000 # steepness for hyperbolid tangent like beta, but steeper
 
@@ -214,18 +210,8 @@ class ForwardSolve:
                 self.cp.interpolate(1.2 * self.cp_0 + (self.rho_material * self.cp_1 - 1.2 * self.cp_0) * (self.rho_dep ** self.penalisationExponent))
                 self.T_n.interpolate(self.T_n * (1 + 0.5 * (fd.tanh(k * ( - y + layer_height_dep -layer_height)) + fd.tanh(k * (y - layer_height_dep))) * 0.5 * (1 + fd.tanh(k * (self.rho_hat - 0.5)))) 
                                     + self.T_1 * (-0.5*(fd.tanh(k*(-y+layer_height_dep-layer_height))+fd.tanh(k*(y-layer_height_dep))))*(0.5*(1+fd.tanh(k*(self.rho_hat - 0.5)))))
-                # self.rho_depFile.write(self.rho_dep)
-                # self.rho_depFile.write(self.rho_dep)
-                # self.k_rhoFile.write(self.k_rho)
-                # self.cpFile.write(self.cp)
+
                 self.tempFile.write(self.T_n)
-                # self.xold.assign(self.xnew)
-
-                max_temps.append(np.max(self.T_n.vector().get_local()))
-                count += 1.0
-                time_steps.append(count)
-
-                # print(f"Heating: count {count} max temp {np.max(self.T_n.vector().get_local()):.2f}")
                 
                 ##### Heating #####
                 current_time = 0.0 
@@ -240,41 +226,76 @@ class ForwardSolve:
                     self.thermalstrainFile.write(self.thermalstrain)
                     self.strainincrement.interpolate(self.strainincrement + self.thermalstrain)
                     self.strainincrementFile.write(self.strainincrement)
+
+                    self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
+                    lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
+                    mu = (self.E) / (2 * (1 + self.nu))
+                    thermal_strain = self.strainincrement * Id
+
+                    u_t = fd.TrialFunction(self.displace)
+                    v_t = fd.TestFunction(self.displace)
+
+                    # Weak form
+                    a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx # Mechanical
+                    L_t = fd.inner(sigma(v_t), thermal_strain) * fd.dx
+
+                    # Solve
+                    u_t = fd.Function(self.displace)
+                    fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
+                    self.u_tFunction.assign(u_t)
+                    self.u_tFile.write(self.u_tFunction)
+                    print(f"Max abs u_t {np.max(np.abs(u_t.vector().get_local())):.3g}")
                     
                     self.T_n.assign(self.T_n1)
                     self.tempFile.write(self.T_n)
-
-                    max_temps.append(np.max(self.T_n.vector().get_local()))
-                    count += self.dt
-                    time_steps.append(count)
-
-                    # print(f"Cooling: count {count} max temp {np.max(self.T_n.vector().get_local()):.2f}")
                     
                     current_time += self.dt
                 
                 if i == n - 1: # Extra cooling at last layer
-                    while current_time < self.t_cool:
-                        F = (self.cp * (self.T_n1 - self.T_n) * w * self.dx + self.dt * self.k_rho * fd.dot(fd.grad(self.T_n1), fd.grad(w)) * self.dx)
-                        F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(1)
-                        F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(2)
-                        F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(4)
-                        fd.solve(F == 0, self.T_n1, bcs=[self.temp_bc1])
+                    # while current_time < self.t_cool:
+                        # F = (self.cp * (self.T_n1 - self.T_n) * w * self.dx + self.dt * self.k_rho * fd.dot(fd.grad(self.T_n1), fd.grad(w)) * self.dx)
+                        # F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(1)
+                        # F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(2)
+                        # F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(4)
+                        # fd.solve(F == 0, self.T_n1, bcs=[self.temp_bc1])
+                    
+                    # Forced cooled to ambient
+                    self.T_n1.interpolate(self.T_0)
 
-                        self.thermalstrain.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
-                        self.thermalstrainFile.write(self.thermalstrain)
-                        self.strainincrement.interpolate(self.strainincrement + self.thermalstrain)
-                        self.strainincrementFile.write(self.strainincrement)
+                    self.thermalstrain.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
+                    self.thermalstrainFile.write(self.thermalstrain)
+                    self.strainincrement.interpolate(self.strainincrement + self.thermalstrain)
+                    self.strainincrementFile.write(self.strainincrement)
 
-                        self.T_n.assign(self.T_n1)
-                        self.tempFile.write(self.T_n)
+                    self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
+                    lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
+                    mu = (self.E) / (2 * (1 + self.nu))
+                    thermal_strain = self.strainincrement * Id
 
-                        max_temps.append(np.max(self.T_n.vector().get_local()))
-                        count += self.dt2
-                        time_steps.append(count)
+                    u_t = fd.TrialFunction(self.displace)
+                    v_t = fd.TestFunction(self.displace)
+
+                    # Weak form
+                    a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx # Mechanical
+                    L_t = fd.inner(sigma(v_t), thermal_strain) * fd.dx
+
+                    # Solve
+                    u_t = fd.Function(self.displace)
+                    fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
+                    self.u_tFunction.assign(u_t)
+                    self.u_tFile.write(self.u_tFunction)
+                    print(f"Max abs u_t {np.max(np.abs(u_t.vector().get_local())):.3g}")
+
+                    self.T_n.assign(self.T_n1)
+                    self.tempFile.write(self.T_n)
+
+                        # max_temps.append(np.max(self.T_n.vector().get_local()))
+                        # count += self.dt2
+                        # time_steps.append(count)
 
                         # print(f"More cooling: count {count} max temp {np.max(self.T_n.vector().get_local()):.2f}")
                         
-                        current_time += self.dt2
+                        # current_time += self.dt2
 
                 # self.xnew.assign(self.residualstrain)
                 # self.residualstrain.interpolate(self.xnew * 0.5 * (1 + fd.tanh(k * (- self.xnew + self.xold))) + self.xold * 0.5 * (1 + fd.tanh(k * (- self.xold + self.xnew))))
@@ -294,40 +315,41 @@ class ForwardSolve:
             # plt.pause(2)
             # plt.close()
             
-            ###### Thermal Displacement ######
-            u_t = fd.TrialFunction(self.displace)
-            v_t = fd.TestFunction(self.displace)
+            # ###### Thermal Displacement ######
+            # u_t = fd.TrialFunction(self.displace)
+            # v_t = fd.TestFunction(self.displace)
 
-            # Surface traction
-            self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
-            Id = fd.Identity(self.mesh.geometric_dimension())
-            lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
-            mu = (self.E) / (2 * (1 + self.nu))
+            # # Surface traction
+            # self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
+            # Id = fd.Identity(self.mesh.geometric_dimension())
+            # lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
+            # mu = (self.E) / (2 * (1 + self.nu))
 
-            thermal_strain = self.strainincrement * Id
-            def epsilon(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
-            def sigma(u): return lambda_ * fd.div(u) * Id + 2 * mu * epsilon(u)
+            # thermal_strain = self.strainincrement * Id
+            # def epsilon(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
+            # def sigma(u): return lambda_ * fd.div(u) * Id + 2 * mu * epsilon(u)
 
-            # Weak form
-            a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx
-            L_t = fd.inner(sigma(v_t), thermal_strain) * fd.dx
+            # # Weak form
+            # # real mechanical strains, thermal might be an extra term
+            # a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx # Mechanical
+            # L_t = fd.inner(sigma(v_t), thermal_strain) * fd.dx
 
-            # Solve
-            u_t = fd.Function(self.displace)
-            fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
-            self.u_tFunction.assign(u_t)
-            self.u_tFile.write(self.u_tFunction)
+            # # Solve
+            # u_t = fd.Function(self.displace)
+            # fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
+            # self.u_tFunction.assign(u_t)
+            # self.u_tFile.write(self.u_tFunction)
 
-            print(f"Max abs u_t {np.max(np.abs(u_t.vector().get_local())):.3g}")
+            # print(f"Max abs u_t {np.max(np.abs(u_t.vector().get_local())):.3g}")
 
-            sigma_xx = fd.project(sigma(u_t)[0, 0], self.DG0)
-            sigma_yy = fd.project(sigma(u_t)[1, 1], self.DG0)
-            sigma_xy = fd.project(sigma(u_t)[0, 1], self.DG0)
-            von_mises_stress = fd.sqrt(sigma_xx**2 - sigma_xx * sigma_yy + sigma_yy**2 + 3 * sigma_xy**2)
-            von_mises_total_proj = fd.project(von_mises_stress, self.DG0)
-            # print("max_stress", np.max(von_mises_total_proj.vector().get_local()))
-            self.thermalstress.assign(von_mises_total_proj)
-            self.thermalstressFile.write(self.thermalstress)
+            # sigma_xx = fd.project(sigma(u_t)[0, 0], self.DG0)
+            # sigma_yy = fd.project(sigma(u_t)[1, 1], self.DG0)
+            # sigma_xy = fd.project(sigma(u_t)[0, 1], self.DG0)
+            # von_mises_stress = fd.sqrt(sigma_xx**2 - sigma_xx * sigma_yy + sigma_yy**2 + 3 * sigma_xy**2)
+            # von_mises_total_proj = fd.project(von_mises_stress, self.DG0)
+            # # print("max_stress", np.max(von_mises_total_proj.vector().get_local()))
+            # self.thermalstress.assign(von_mises_total_proj)
+            # self.thermalstressFile.write(self.thermalstress)
 
 
             ###### Compliance ######
@@ -383,24 +405,24 @@ class ForwardSolve:
                 self.c = np.array([self.c1])
                 self.dcdrho = self.dc1drho
 
-            elif self.scenario == 2:
-                ##### Objective: Stress #####
-                self.j = self.stressintegral #fd.assemble(fd.inner(T, u) * self.ds(4))
+            # elif self.scenario == 2:
+            #     ##### Objective: Stress #####
+            #     self.j = self.stressintegral #fd.assemble(fd.inner(T, u) * self.ds(4))
 
-                ##### Constraints #####
-                volume_fraction = (1 / self.meshVolume) * fd.assemble(self.rho_hat * self.dx)
-                self.c1 = self.Vlimit - volume_fraction
-                self.c2 = 8e3 - fd.assemble(fd.inner(T, u) * self.ds(4))
+            #     ##### Constraints #####
+            #     volume_fraction = (1 / self.meshVolume) * fd.assemble(self.rho_hat * self.dx)
+            #     self.c1 = self.Vlimit - volume_fraction
+            #     self.c2 = 8e3 - fd.assemble(fd.inner(T, u) * self.ds(4))
 
-                ##### Objective sensitivities #####
-                self.djdrho = (fda.compute_gradient(self.j, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
+            #     ##### Objective sensitivities #####
+            #     self.djdrho = (fda.compute_gradient(self.j, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
 
-                ##### Constraint sensitivities #####
-                self.dc1drho = (fda.compute_gradient(self.c1, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
-                self.dc2drho = (fda.compute_gradient(self.c2, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
+            #     ##### Constraint sensitivities #####
+            #     self.dc1drho = (fda.compute_gradient(self.c1, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
+            #     self.dc2drho = (fda.compute_gradient(self.c2, fda.Control(self.rho)).vector().get_local()) / self.gradientScale
 
-                self.c = np.array([self.c1, self.c2])
-                self.dcdrho = np.concatenate((self.dc1drho, self.dc2drho))
+            #     self.c = np.array([self.c1, self.c2])
+            #     self.dcdrho = np.concatenate((self.dc1drho, self.dc2drho))
 
             else:
                 pass 
