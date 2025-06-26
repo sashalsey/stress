@@ -36,14 +36,14 @@ class ForwardSolve:
         self.cp_0, self.cp_1 = 1e3, 500 # coeff specific heat capacity of air, titanium
         self.rho_material = 4500.0
         self.t_heat = 2.0 # time between deposit and next layer
-        self.dt = 1.0 # timestep for t_heat
+        self.dt = 1.0 # timestep
 
         # Baseplate properties
-        self.E_b = 1.9e11 #1.0e11 #
-        self.k_b = 15.0 #17.0 #
-        self.alpha_b = 16e-6 #8e-6 #
-        self.cp_b = 500 # 
-        self.rho_b = 8000.0 #4500.0 #
+        self.E_b = 1.9e11
+        self.k_b = 15.0
+        self.alpha_b = 16e-6
+        self.cp_b = 500
+        self.rho_b = 8000.0
         
         # pseudo-density functional
         self.beta = beta  # heaviside projection paramesteepnesster
@@ -54,15 +54,16 @@ class ForwardSolve:
         self.initial_stressintegral = float(initial_stressintegral)
 
     def GenerateMesh(self,):
-        self.mesh = fd.RectangleMesh(self.nx, self.ny, self.lx, self.ly, quadrilateral=True)
-        self.gradientScale = (self.nx * self.ny) / (self.lx * self.ly)
+        self.mesh = fd.BoxMesh(self.nx, self.ny, self.nz, self.lx, self.ly, self.lz, hexahedral=False, diagonal='default')
+        self.gradientScale = (self.nx * self.ny * self.nz) / (self.lx * self.ly * self.lz)
         self.dx = fd.Measure('dx', domain=self.mesh)
         self.ds = fd.ds(domain=self.mesh)
         self.n = fd.FacetNormal(self.mesh)
+        print("Mesh generated")
 
     def Setup(self):
-        self.nx, self.ny = 100, 200
-        self.lx, self.ly =  0.05, 0.1
+        self.nx, self.ny, self.nz = 10, 20, 4
+        self.lx, self.ly, self.lz =  0.05, 0.1, 0.02
         self.cellsize = self.lx / self.nx
         self.GenerateMesh()
         self.meshVolume = fd.assemble(1 * fd.dx(domain=self.mesh))
@@ -85,10 +86,11 @@ class ForwardSolve:
         # boundary conditions
         # 1: vertical y lhs, 2: vertical y rhs, 3: horizontal x bottom, 4: horizontal x top
         # BCs for compliance optimisation
-        self.mech_bc1 = fd.DirichletBC(self.displace, fd.Constant((0, 0)), 3) # fixed bottom face
-        # self.mech_bc2 = FixedDirichletBC(self.displace.sub(0), fd.Constant(0), np.array([0.05, 0.1])) # pinned top rhs corner
+        self.mech_bc1 = fd.DirichletBC(self.displace, fd.Constant((0, 0, 0)), 3) # fixed bottom face
+        # self.mech_bc2 = FixedDirichletBC(self.displace.sub(0), fd.Constant(0), np.array([0.05, 0.1, 0.025])) # pinned top rhs corner
         # BCs for thermal
-        self.mech_bc3 = FixedDirichletBC(self.displace.sub(0), fd.Constant(0), np.array([0.025, 0.0]))
+        self.mech_bc3 = FixedDirichletBC(self.displace.sub(0), fd.Constant(0), np.array([0.025, 0.0, 0.01]))
+        # self.mech_bc3 = fd.DirichletBC(self.displace, fd.Constant((0, 0, 0)), 3) # fixed bottom face
         self.temp_bc1 = fd.DirichletBC(self.templace, fd.Constant(300.0), 3)
 
         # output files
@@ -111,9 +113,6 @@ class ForwardSolve:
         self.strainincrementFile = VTKFile(self.outputFolder + "strain_increment.pvd")
         self.residualstrain = fd.Function(self.densityspace, name="residual_thermal_strain")
         self.residualstrainFile = VTKFile(self.outputFolder + "residualthermalstrain.pvd")
-        
-        # self.xnew = fd.Function(self.densityspace, name="xnew")
-        # self.xold = fd.Function(self.densityspace, name="xold")
     
         # mechanical distortion displacement
         self.uFile = VTKFile(self.outputFolder + "u.pvd")
@@ -172,7 +171,7 @@ class ForwardSolve:
             u = fd.TrialFunction(self.densityspace)
             v = fd.TestFunction(self.densityspace)
 
-            x, y = fd.SpatialCoordinate(self.mesh)
+            x, y, z = fd.SpatialCoordinate(self.mesh)
 
             # Weak variational form
             a = (fd.Constant(self.helmholtzFilterRadius) ** 2) * fd.inner(fd.grad(u), fd.grad(v)) * self.dx + fd.inner(u, v) * self.dx
@@ -198,11 +197,10 @@ class ForwardSolve:
             w = fd.TestFunction(self.templace)
             
             self.T_n.interpolate(fd.Constant(self.T_0))
+            self.E = fd.Function(self.densityspace)
 
             plastic = -0.01 #self.yieldstress / self.E_1
             self.thermalstrain.interpolate(fd.Constant(0))
-
-            self.E = fd.Function(self.densityspace)
 
             Id = fd.Identity(self.mesh.geometric_dimension())
             def epsilon(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
@@ -213,9 +211,9 @@ class ForwardSolve:
                 layer_height_dep = layer_height * (i + 1)
                 k = 1000 # steepness for hyperbolid tangent like beta, but steeper
 
-                if i == 0: # Baseplate layer 0 and 1
+                if i == 0: # Baseplate layer 0
                     self.rho_dep.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.rho_hat)
-                    self.rho_depFile.write(self.rho_dep)
+                    # self.rho_depFile.write(self.rho_dep)
                     self.k_rho.interpolate(self.k_0 + (self.k_b - self.k_0) * (self.rho_dep ** self.penalisationExponent))
                     self.cp.interpolate(1.2 * self.cp_0 + (self.rho_b * self.cp_b - 1.2 * self.cp_0) * (self.rho_dep ** self.penalisationExponent))
                     self.T_n.interpolate(self.T_n * (1 + 0.5 * (fd.tanh(k * ( - y + layer_height_dep -layer_height)) + fd.tanh(k * (y - layer_height_dep))) * 0.5 * (1 + fd.tanh(k * (self.rho_hat - 0.5)))) 
@@ -225,7 +223,7 @@ class ForwardSolve:
                 
                 elif i >= 1 and i <= n-1: # Build layers
                     self.rho_dep.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.rho_hat)
-                    self.rho_depFile.write(self.rho_dep)
+                    # self.rho_depFile.write(self.rho_dep)
                     self.k_rho.interpolate(self.k_0 + (self.k_1 - self.k_0) * (self.rho_dep ** self.penalisationExponent))
                     self.cp.interpolate(1.2 * self.cp_0 + (self.rho_material * self.cp_1 - 1.2 * self.cp_0) * (self.rho_dep ** self.penalisationExponent))
                     self.T_n.interpolate(self.T_n * (1 + 0.5 * (fd.tanh(k * ( - y + layer_height_dep -layer_height)) + fd.tanh(k * (y - layer_height_dep))) * 0.5 * (1 + fd.tanh(k * (self.rho_hat - 0.5)))) 
@@ -243,9 +241,9 @@ class ForwardSolve:
 
                         self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
                         self.strainincrement.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.strainincrement)
-                        self.strainincrementFile.write(self.strainincrement)
+                        # self.strainincrementFile.write(self.strainincrement)
                         self.thermalstrain.interpolate(self.strainincrement + self.thermalstrain)
-                        self.thermalstrainFile.write(self.thermalstrain)
+                        # self.thermalstrainFile.write(self.thermalstrain)
                         self.residualstrain.interpolate(0.5 * (- 1 + fd.tanh(k * (self.thermalstrain - plastic))) * -1 * self.thermalstrain)
                         self.residualstrainFile.write(self.residualstrain)
                         
@@ -266,7 +264,7 @@ class ForwardSolve:
 
                         # Solve
                         u_t = fd.Function(self.displace)
-                        fd.solve(a_t == L_t, u_t, bcs=self.mech_bc1)
+                        fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
                         self.u_tFunction.assign(u_t)
                         self.u_tFile.write(self.u_tFunction)
                         print(f"Max abs u_t {np.max(np.abs(u_t.vector().get_local())):.3g}")
@@ -283,9 +281,9 @@ class ForwardSolve:
 
                     self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
                     self.strainincrement.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.strainincrement)
-                    self.strainincrementFile.write(self.strainincrement)
+                    # self.strainincrementFile.write(self.strainincrement)
                     self.thermalstrain.interpolate(self.strainincrement + self.thermalstrain)
-                    self.thermalstrainFile.write(self.thermalstrain)
+                    # self.thermalstrainFile.write(self.thermalstrain)
                     self.residualstrain.interpolate(0.5 * (- 1 + fd.tanh(k * (self.thermalstrain - plastic))) * -1 * self.thermalstrain)
                     self.residualstrainFile.write(self.residualstrain)
 
@@ -305,7 +303,7 @@ class ForwardSolve:
 
                     # Solve
                     u_t = fd.Function(self.displace)
-                    fd.solve(a_t == L_t, u_t, bcs=self.mech_bc1)
+                    fd.solve(a_t == L_t, u_t, bcs=self.mech_bc3)
                     self.u_tFunction.assign(u_t)
                     self.u_tFile.write(self.u_tFunction)
                     print(f"Max abs u_t coooooooling {np.max(np.abs(u_t.vector().get_local())):.3g}")
@@ -314,7 +312,8 @@ class ForwardSolve:
                         # count += self.dt2
                         # time_steps.append(count)
             # self.stressintegral = fd.assemble(((self.strainincrement ** self.pnorm) * self.dx) ) ** (1/self.pnorm)
-            sys.exit()           
+            sys.exit()  
+            
             
             ##### Plot temperature over transient loop #####
             # plt.figure(figsize=(10, 6))
@@ -337,6 +336,21 @@ class ForwardSolve:
             # self.thermalstress.assign(von_mises_total_proj)
             # self.thermalstressFile.write(self.thermalstress)
 
+            # Stress Calculation
+            # sigma_xx = fd.project(sigma(u)[0, 0], self.DG0)
+            # sigma_yy = fd.project(sigma(u)[1, 1], self.DG0)
+            # sigma_zz = fd.project(sigma(u)[2, 2], self.DG0)
+            # sigma_xy = fd.project(sigma(u)[0, 1], self.DG0)
+            # sigma_yz = fd.project(sigma(u)[1, 2], self.DG0)
+            # sigma_zx = fd.project(sigma(u)[2, 0], self.DG0)
+
+            print("ctrl z")
+            time.sleep(5.0)
+
+            self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
+            lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
+            mu = (self.E) / (2 * (1 + self.nu))
+
             ###### Mechanical Load Compliance ######
             u = fd.TrialFunction(self.displace)
             v = fd.TestFunction(self.displace)
@@ -344,12 +358,12 @@ class ForwardSolve:
             # Surface traction
             T = fd.conditional(
                 fd.And(fd.gt(y, 0.095), fd.gt(x, 0.04)),
-                fd.as_vector([-3e8, 0]),
-                fd.as_vector([0, 0]))
+                fd.as_vector([-3e8, 0, 0]),
+                fd.as_vector([0, 0, 0]))
 
             # Weak form
             a = fd.inner(sigma(u), epsilon(v)) * fd.dx
-            L = fd.dot(T, v) * fd.ds(4)
+            L = fd.dot(T, v) * fd.ds(6)
 
             # Solve
             u = fd.Function(self.displace)
