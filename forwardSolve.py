@@ -262,7 +262,7 @@ class ForwardSolve:
 
                         # Weak form
                         a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx # Mechanical
-                        L_t = - 1 * fd.inner(sigma(v_t), self.thermalstrain * Id) * fd.dx # Thermal
+                        L_t = fd.inner(sigma(v_t), self.thermalstrain * Id) * fd.dx # Thermal
 
                         # Solve
                         u_t = fd.Function(self.displace)
@@ -299,7 +299,7 @@ class ForwardSolve:
 
                     # Weak form
                     a_t = fd.inner(sigma(u_t), epsilon(v_t)) * fd.dx # Mechanical
-                    L_t = - 1 * fd.inner(sigma(v_t), self.thermalstrain * Id) * fd.dx # Thermal
+                    L_t = fd.inner(sigma(v_t), self.thermalstrain * Id) * fd.dx # Thermal
 
                     # Solve
                     u_t = fd.Function(self.displace)

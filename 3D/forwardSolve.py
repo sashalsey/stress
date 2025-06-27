@@ -62,7 +62,7 @@ class ForwardSolve:
         print("Mesh generated")
 
     def Setup(self):
-        self.nx, self.ny, self.nz = 10, 20, 4
+        self.nx, self.ny, self.nz = 20, 40, 8
         self.lx, self.ly, self.lz =  0.05, 0.1, 0.02
         self.cellsize = self.lx / self.nx
         self.GenerateMesh()
@@ -106,13 +106,13 @@ class ForwardSolve:
         self.T_n = fd.Function(self.templace, name="Temperature")
 
         self.thermalstrain = fd.Function(self.densityspace, name="thermalstrain")
-        self.thermalstrainFile = VTKFile(self.outputFolder + "thermalstrain.pvd")
+        # self.thermalstrainFile = VTKFile(self.outputFolder + "thermalstrain.pvd")
         self.thermalstress = fd.Function(self.densityspace, name="thermalstress")
         self.thermalstressFile = VTKFile(self.outputFolder + "thermalstress.pvd")
         self.strainincrement = fd.Function(self.densityspace, name="strain_increment")
-        self.strainincrementFile = VTKFile(self.outputFolder + "strain_increment.pvd")
+        # self.strainincrementFile = VTKFile(self.outputFolder + "strain_increment.pvd")
         self.residualstrain = fd.Function(self.densityspace, name="residual_thermal_strain")
-        self.residualstrainFile = VTKFile(self.outputFolder + "residualthermalstrain.pvd")
+        # self.residualstrainFile = VTKFile(self.outputFolder + "residualthermalstrain.pvd")
     
         # mechanical distortion displacement
         self.uFile = VTKFile(self.outputFolder + "u.pvd")
@@ -122,7 +122,7 @@ class ForwardSolve:
         self.u_tFile = VTKFile(self.outputFolder + "u_t.pvd")
         self.u_tFunction = fd.Function(self.displace, name="u_t")
 
-        self.Efile = VTKFile(self.outputFolder + "E.pvd")
+        # self.Efile = VTKFile(self.outputFolder + "E.pvd")
 
     def ComputeInitialSolution(self):
 
@@ -239,18 +239,18 @@ class ForwardSolve:
                         F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(4)
                         fd.solve(F == 0, self.T_n1, bcs=[self.temp_bc1])
 
-                        self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
+                        self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_n) * self.rho_dep)
                         self.strainincrement.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.strainincrement)
                         # self.strainincrementFile.write(self.strainincrement)
                         self.thermalstrain.interpolate(self.strainincrement + self.thermalstrain)
                         # self.thermalstrainFile.write(self.thermalstrain)
                         self.residualstrain.interpolate(0.5 * (- 1 + fd.tanh(k * (self.thermalstrain - plastic))) * -1 * self.thermalstrain)
-                        self.residualstrainFile.write(self.residualstrain)
+                        # self.residualstrainFile.write(self.residualstrain)
                         
                         self.E.interpolate(self.E_0 + 
                         (self.E_1 - self.E_0) * (self.rho_dep ** self.penalisationExponent) * 0.5 * (1 + fd.tanh(k * (y - layer_height))) * 0.5 * (1 + fd.tanh(k * (-y + layer_height_dep))) +
                         (self.E_b - self.E_0) * (self.rho_dep ** self.penalisationExponent) * 0.5 * (1 + fd.tanh(k * (-y + layer_height))))
-                        self.Efile.write(self.E)
+                        # self.Efile.write(self.E)
                         # self.E = self.E_0 + (self.E_1 - self.E_0) * (self.rho_hat ** self.penalisationExponent)
                         lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
                         mu = (self.E) / (2 * (1 + self.nu))
@@ -276,21 +276,19 @@ class ForwardSolve:
                 
                 if i == n - 1: # Forced cooled to ambient
                     self.T_n1.interpolate(self.T_0)
-                    self.T_n.assign(self.T_n1)
-                    self.tempFile.write(self.T_n)
 
-                    self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_1) * self.rho_dep)
+                    self.strainincrement.interpolate(self.alpha_1 * (self.T_n1 - self.T_n) * self.rho_dep)
                     self.strainincrement.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.strainincrement)
                     # self.strainincrementFile.write(self.strainincrement)
                     self.thermalstrain.interpolate(self.strainincrement + self.thermalstrain)
                     # self.thermalstrainFile.write(self.thermalstrain)
                     self.residualstrain.interpolate(0.5 * (- 1 + fd.tanh(k * (self.thermalstrain - plastic))) * -1 * self.thermalstrain)
-                    self.residualstrainFile.write(self.residualstrain)
+                    # self.residualstrainFile.write(self.residualstrain)
 
                     self.E.interpolate(self.E_0 + 
                         (self.E_1 - self.E_0) * (self.rho_dep ** self.penalisationExponent) * 0.5 * (1 + fd.tanh(k * (y - layer_height))) * 0.5 * (1 + fd.tanh(k * (-y + layer_height_dep))) +
                         (self.E_b - self.E_0) * (self.rho_dep ** self.penalisationExponent) * 0.5 * (1 + fd.tanh(k * (-y + layer_height))))
-                    self.Efile.write(self.E)
+                    # self.Efile.write(self.E)
                     lambda_ = (self.E * self.nu) / ((1 + self.nu) * (1 - 2 * self.nu))
                     mu = (self.E) / (2 * (1 + self.nu))
 
@@ -308,11 +306,13 @@ class ForwardSolve:
                     self.u_tFile.write(self.u_tFunction)
                     print(f"Max abs u_t coooooooling {np.max(np.abs(u_t.vector().get_local())):.3g}")
 
+                    self.T_n.assign(self.T_n1)
+                    self.tempFile.write(self.T_n)
+
                         # max_temps.append(np.max(self.T_n.vector().get_local()))
                         # count += self.dt2
                         # time_steps.append(count)
-            # self.stressintegral = fd.assemble(((self.strainincrement ** self.pnorm) * self.dx) ) ** (1/self.pnorm)
-            sys.exit()  
+            # self.stressintegral = fd.assemble(((self.strainincrement ** self.pnorm) * self.dx) ) ** (1/self.pnorm)  
             
             
             ##### Plot temperature over transient loop #####
@@ -327,14 +327,15 @@ class ForwardSolve:
             # plt.close()
             
             ###### Final Thermal Stress ######
-            # sigma_xx = fd.project(sigma(u_t)[0, 0], self.DG0)
-            # sigma_yy = fd.project(sigma(u_t)[1, 1], self.DG0)
-            # sigma_xy = fd.project(sigma(u_t)[0, 1], self.DG0)
-            # von_mises_stress = fd.sqrt(sigma_xx**2 - sigma_xx * sigma_yy + sigma_yy**2 + 3 * sigma_xy**2)
-            # von_mises_total_proj = fd.project(von_mises_stress, self.DG0)
-            # # print("max_stress", np.max(von_mises_total_proj.vector().get_local()))
-            # self.thermalstress.assign(von_mises_total_proj)
-            # self.thermalstressFile.write(self.thermalstress)
+            sigma_xx = fd.project(sigma(u_t)[0, 0], self.DG0)
+            sigma_yy = fd.project(sigma(u_t)[1, 1], self.DG0)
+            sigma_xy = fd.project(sigma(u_t)[0, 1], self.DG0)
+            von_mises_stress = fd.sqrt(sigma_xx**2 - sigma_xx * sigma_yy + sigma_yy**2 + 3 * sigma_xy**2)
+            von_mises_total_proj = fd.project(von_mises_stress, self.DG0)
+            # print("max_stress", np.max(von_mises_total_proj.vector().get_local()))
+            self.thermalstress.assign(von_mises_total_proj)
+            self.thermalstressFile.write(self.thermalstress)
+            sys.exit()
 
             # Stress Calculation
             # sigma_xx = fd.project(sigma(u)[0, 0], self.DG0)
