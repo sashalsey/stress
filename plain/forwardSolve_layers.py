@@ -29,7 +29,7 @@ class ForwardSolve:
         self.nu = 0.3
 
         # thermal properties
-        self.T_0, self.T_1 = 300.0, 2000.0 # atmospheric temperature, heating temperature
+        self.T_0, self.T_1 = 0.0, 100.0 # atmospheric temperature, heating temperature
         self.k_0, self.k_1 = 0.026, 17.0 # thermal conduction coeff of air, titanium
         self.alpha_0, self.alpha_1 = 2e-3, 8e-6 # linear thermal expansion coeff of air, titanium
         self.h = 100.0 # thermal convection coeff
@@ -80,10 +80,7 @@ class ForwardSolve:
         # 1: vertical y lhs, 2: vertical y rhs, 3: horizontal x bottom, 4: horizontal x top
         # self.mech_bc1 = FixedDirichletBC(self.displace, fd.Constant((0.0, 0.0)), np.array([0.25, 0.0]))
         self.mech_bc1 = fd.DirichletBC(self.displace, fd.Constant((0, 0)), 1) 
-        # self.mech_bc2 = fd.DirichletBC(self.displace, fd.Constant((0, 0)), 2) 
-        # self.mech_bc3 = fd.DirichletBC(self.displace, fd.Constant((0, 0)), 3) 
-        # self.mech_bc4 = fd.DirichletBC(self.displace, fd.Constant((0, 0)), 4)
-        self.temp_bc1 = fd.DirichletBC(self.templace, fd.Constant(300.0), 3)
+        self.temp_bc1 = fd.DirichletBC(self.templace, fd.Constant(0.0), 3)
 
         # output files
         self.rho_hatFile = VTKFile(self.outputFolder + "rho_hat.pvd")
@@ -186,12 +183,53 @@ class ForwardSolve:
             self.rho_hatFunction.assign(fd.project(self.rho_hat, self.densityspace))
             self.rho_hatFile.write(self.rho_hatFunction)
             
-            ##### Temperature ######            
+            ##### Temperature ######
+            # Total strain = strain_mech + strain_therm
+            def strain_total(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
+
+            def distortion_solve(T_n1, T_n, E, rho, alpha):
+                thermal_strain = alpha * (T_n1 - T_n) * rho * Id
+                self.strain_th_increment.interpolate(fd.project(thermal_strain, self.DG0))
+                self.strain_therm.interpolate(self.strain_th_increment + self.strain_therm)
+                self.strain_thermFile.write(self.strain_therm)
+
+                u_t = fd.TrialFunction(self.displace)
+                v_t = fd.TestFunction(self.displace)
+
+                a_t = fd.inner((E * strain_total(u_t)), strain_total(v_t)) * fd.dx
+                L_t = fd.inner((E * self.strain_therm), strain_total(v_t)) * fd.dx
+
+                sol = fd.Function(self.displace)
+                fd.solve(a_t == L_t, sol, bcs=[self.mech_bc3, self.mech_bc4])
+
+                self.u_tFunction.interpolate(sol)
+                self.u_tFile.write(self.u_tFunction)
+
+                self.total_strain.interpolate(fd.project(strain_total(sol), self.DG0))
+                self.total_strainFile.write(self.total_strain) 
+
+                self.strain_mech.interpolate(self.total_strain - self.strain_therm) 
+                self.strain_mechFile.write(self.strain_mech)
+                mu = E / (2 * (1 + self.nu))
+                lmbda = E * self.nu / (1 - self.nu**2) # Plane stress
+                # def stress_mech(eps): return lambda * fd.tr(eps) * Id + 2 * mu * eps
+                self.stress_mech.interpolate(lmbda * fd.tr(self.strain_mech) * Id + 2 * mu * self.strain_mech)
+                self.stress_mechFile.write(self.stress_mech)
+
+                print("Max temp {:.4e}".format(np.max(self.T_n.vector().get_local())))
+                print("Thermal strain total max dat {:.4e}".format(np.max(np.abs(self.strain_therm.dat.data))))
+                print("Total strain max dat {:.4e}".format(np.max(np.abs(self.total_strain.dat.data))))
+                print("Mech strain max dat {:.4e}".format(np.max(np.abs(self.strain_mech.dat.data))))
+                print("Mech stress max dat {:.4e}".format(np.max(np.abs(self.stress_mech.dat.data))))
+                print("u_t max dat {:.4e}".format(np.max(np.abs(self.u_tFunction.dat.data))))
+
             Id = fd.Identity(self.mesh.geometric_dimension())
             current_time = 0.0
             time_steps = []
             max_temps   = []
-            max_stress  = []
+            max_strain_to  = []
+            max_strain_me  = []
+            max_strain_th  = []
 
             self.T_n.interpolate(fd.Constant(self.T_0))
             self.tempFile.write(self.T_n)
@@ -199,10 +237,9 @@ class ForwardSolve:
 
             time_steps.append(current_time)
             max_temps.append(np.max(self.T_n.vector().get_local()))
-            max_stress.append(0)
-
-            # Total strain = strain_mech + strain_therm
-            def strain_total(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
+            max_strain_to.append(0)
+            max_strain_me.append(0)
+            max_strain_th.append(0)
 
             n = 5
             layer_height = self.ly / n
@@ -259,9 +296,11 @@ class ForwardSolve:
 
                 current_global_time += self.dt
                 time_steps.append(current_global_time)
-                max_temps.append(np.max(self.T_n.vector().get_local()))
-                max_stress.append(np.max(np.abs(self.stress_mech.dat.data)))
-
+                max_temps.append(max_temp)
+                max_strain_to.append(np.max(np.abs(self.total_strain.dat.data)))
+                max_strain_me.append(np.max(np.abs(self.strain_mech.dat.data)))
+                max_strain_th.append(np.max(np.abs(self.strain_therm.dat.data)))
+                
                 while current_time < self.t_heat:
                     u_t = fd.TrialFunction(self.displace)
                     v_t = fd.TestFunction(self.displace)
