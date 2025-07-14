@@ -29,15 +29,15 @@ class ForwardSolve:
         self.nu = 0.3
 
         # thermal properties
-        self.T_0, self.T_1 = 0.0, 100.0 # atmospheric temperature, heating temperature
+        self.T_0, self.T_1 = 400.0, 4000.0 # atmospheric temperature, heating temperature
         self.k_0, self.k_1 = 0.026, 17.0 # thermal conduction coeff of air, titanium
         self.alpha_0, self.alpha_1 = 1e-12, 8e-6 # linear thermal expansion coeff of air, titanium
         self.h = 100.0 # thermal convection coeff
         self.cp_0, self.cp_1 = 1e3, 500 # coeff specific heat capacity of air, titanium
         self.rho_material = 4500.0
-        self.t_heat = 60.0 # time between deposit and next layer
-        self.dt = 10.0 # timestep for t_heat
-        self.dt2 = 5.0 # timestep for cooling
+        self.t_heat = 30.0 # time between deposit and next layer
+        self.dt = 5.0 # timestep for t_heat
+        self.dt2 = 20.0 # timestep for cooling
         
         # pseudo-density functional
         self.beta = beta  # heaviside projection paramesteepnesster
@@ -55,7 +55,7 @@ class ForwardSolve:
         self.n = fd.FacetNormal(self.mesh)
 
     def Setup(self):
-        self.nx, self.ny = 100, 100
+        self.nx, self.ny = 200, 100
         self.lx, self.ly =  0.1, 0.05
         self.cellsize = self.lx / self.nx
         self.GenerateMesh()
@@ -78,7 +78,10 @@ class ForwardSolve:
         # boundary conditions
         # 1: vertical y lhs, 2: vertical y rhs, 3: horizontal x bottom, 4: horizontal x top
         self.mech_bc1 = FixedDirichletBC(self.displace.sub(1), fd.Constant((0.0)), np.array([0.05, 0.0]))
-        # self.mech_bc1 = fd.DirichletBC(self.displace.sub(1), fd.Constant((0.0)), 3) 
+        # self.mech_bc1 = fd.DirichletBC(self.displace, fd.Constant((0.0, 0.0)), 3) 
+        # self.mech_bc2 = fd.DirichletBC(self.displace, fd.Constant((0.0, 0.0)), 2) 
+        # self.mech_bc3 = fd.DirichletBC(self.displace, fd.Constant((0.0, 0.0)), 1) 
+        # self.mech_bc4 = fd.DirichletBC(self.displace, fd.Constant((0.0, 0.0)), 4) 
         self.temp_bc1 = fd.DirichletBC(self.templace, fd.Constant(self.T_0), 3)
 
         # output files
@@ -223,37 +226,41 @@ class ForwardSolve:
                 'snes_atol': 1e-12,
                 'snes_max_it': 500}
 
-            def distortion_solve(self, T_n1, T_n, E, rho, alpha):
-                thermal_strain = alpha * (T_n1 - T_n) * rho * self.Id
+            def thermal_strain_solve(self, T_n1, T_n, alpha):
+                thermal_strain = alpha * (T_n1 - T_n) * self.rho_dep * self.Id
                 self.strain_th_increment.interpolate(fd.project(thermal_strain, self.DG0))
                 self.strain_th_incrementFile.write(self.strain_th_increment)
                 self.strain_th_increment.interpolate(0.5 * self.strain_th_increment * (1 + fd.tanh(k * (self.rho_dep - 0.5))))
-                self.strain_therm.interpolate(self.strain_th_increment + self.strain_therm)
+                self.strain_therm.interpolate((self.strain_th_increment + self.strain_therm) * self.rho_dep)
                 self.strain_therm.interpolate(0.5 * self.strain_therm * (1 + fd.tanh(k * (self.rho_dep - 0.5))))
                 self.strain_thermFile.write(self.strain_therm)
+
+            def distortion_solve(self):
+                rho = self.rho_dep
 
                 u_t = fd.TrialFunction(self.displace)
                 v_t = fd.TestFunction(self.displace)
 
-                a_t = fd.inner((E * strain_total(u_t)), strain_total(v_t)) * fd.dx
-                L_t = fd.inner((E * self.strain_therm), strain_total(v_t)) * fd.dx
+                a_t = fd.inner((self.E * strain_total(u_t)), strain_total(v_t)) * rho * fd.dx
+                L_t = fd.inner((self.E * self.strain_therm), strain_total(v_t)) * rho * fd.dx
 
                 sol = fd.Function(self.displace)
                 fd.solve(a_t == L_t, sol, bcs=[self.mech_bc1], solver_parameters=distortion_solver_parameters)
-                sol.interpolate(0.5 * sol * (1 + fd.tanh(k * (self.rho_dep - 0.5))))
+                sol.interpolate(0.5 * sol * (1 + fd.tanh(k * (rho - 0.5))))
                 self.u_tFunction.interpolate(sol)
                 self.u_tFile.write(self.u_tFunction)
 
-                self.total_strain.interpolate(fd.project(strain_total(sol), self.DG0))
-                self.total_strain.interpolate(0.5 * self.total_strain * (1 + fd.tanh(k * (self.rho_dep - 0.5))))
+                self.total_strain.interpolate(fd.project(strain_total(sol) * rho, self.DG0))
+                self.total_strain.interpolate(0.5 * self.total_strain * (1 + fd.tanh(k * (rho - 0.5))))
                 self.total_strainFile.write(self.total_strain) 
 
                 self.strain_mech.interpolate(self.total_strain - self.strain_therm) 
-                self.strain_mech.interpolate(0.5 * self.strain_mech * (1 + fd.tanh(k * (self.rho_dep - 0.5))))
+                self.strain_mech.interpolate(0.5 * self.strain_mech * (1 + fd.tanh(k * (rho - 0.5))))
                 self.strain_mechFile.write(self.strain_mech)
-                mu = E / (2 * (1 + self.nu))
-                lmbda = E * self.nu / (1 - self.nu**2) # Plane stress
+                mu = self.E / (2 * (1 + self.nu))
+                lmbda = self.E * self.nu / (1 - self.nu**2) # Plane stress
                 self.stress_mech.interpolate(lmbda * fd.tr(self.strain_mech) * self.Id + 2 * mu * self.strain_mech)
+                self.stress_mech.interpolate(0.5 * self.stress_mech * (1 + fd.tanh(k * (rho - 0.5))))
                 self.stress_mechFile.write(self.stress_mech)
 
                 print("Max temp {:.2f}".format(np.max(self.T_n.vector().get_local())))
@@ -278,7 +285,7 @@ class ForwardSolve:
             max_strain_me.append(0)
             max_strain_th.append(0)
 
-            n = 2
+            n = 4
             layer_height = self.ly / n
             current_global_time = 0.0
 
@@ -287,7 +294,7 @@ class ForwardSolve:
                 layer_height_dep = layer_height * (i + 1)
                 k = 10000
 
-                if i == n - 1: self.t_heat = 1500.0
+                if i == n - 1: self.t_heat, self.dt = 500.0, self.dt
                 else: self.t_heat = 60.0
 
                 self.rho_dep.interpolate(0.5 * (1 + fd.tanh(k * ( - y + layer_height_dep))) * self.rho_hat)
@@ -310,7 +317,8 @@ class ForwardSolve:
                 self.cpFile.write(self.cp)
                 self.k_rhoFile.write(self.k_rho)
                 self.EFile.write(self.E)
-                if i != 0: distortion_solve(self, self.T_n1, self.T_n, self.E, self.rho_dep, self.alpha)
+                # if i != 0: 
+                # distortion_solve(self, self.T_n1, self.T_n, self.E, self.rho_dep, self.alpha)
                 self.T_n.interpolate(self.T_n1)
                 self.tempFile.write(self.T_n)
 
@@ -319,10 +327,15 @@ class ForwardSolve:
                 current_global_time += self.dt
                 time_steps.append(current_global_time)
                 max_temps.append(np.max(self.T_n.vector().get_local()))
-                max_strain_to.append(np.max(np.abs(self.total_strain.dat.data)))
-                max_strain_me.append(np.max(np.abs(self.strain_mech.dat.data)))
-                max_strain_th.append(np.max(np.abs(self.strain_therm.dat.data)))
-                
+                if n == 0 :
+                    max_strain_to.append(0)
+                    max_strain_me.append(0)
+                    max_strain_th.append(0)
+                else: 
+                    max_strain_to.append(np.max(np.abs(self.total_strain.dat.data)))
+                    max_strain_me.append(np.max(np.abs(self.strain_mech.dat.data)))
+                    max_strain_th.append(np.max(np.abs(self.strain_therm.dat.data)))
+            
                 while current_time < self.t_heat:
                     w = fd.TestFunction(self.templace)
 
@@ -330,11 +343,13 @@ class ForwardSolve:
                     F = (self.cp * (self.T_n1 - self.T_n) * w * self.dx + self.dt * self.k_rho * fd.dot(fd.grad(self.T_n1), fd.grad(w)) * self.dx)
                     F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(1)
                     F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(2)
+                    # F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(3)
                     F += self.dt * self.h * (self.T_n1 - self.T_0) * w * self.ds(4)
                     fd.solve(F == 0, self.T_n1, bcs=[self.temp_bc1])
                     
                     # Here, new temp is T_n1, previous temp is T_n
-                    distortion_solve(self, self.T_n1, self.T_n, self.E, self.rho_dep, self.alpha)
+                    thermal_strain_solve(self, self.T_n1, self.T_n, self.alpha)
+                    distortion_solve(self)
 
                     self.T_n.assign(self.T_n1)
                     self.tempFile.write(self.T_n)
@@ -389,7 +404,8 @@ class ForwardSolve:
                     #             break
                                 
                     #         iteration += 1
-            
+            # distortion_solve(self, self.E)
+
             plt.figure(figsize=(12, 5))
             plt.subplot(1, 2, 1)
             plt.plot(time_steps, max_temps, 'r-')
