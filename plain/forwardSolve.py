@@ -254,16 +254,16 @@ class ForwardSolve:
                 self.strain_mech.interpolate(self.strain_mech + self.strain_mech_increment)
                 
                 # #####PREVIOUS##### (Not incremental)
-                # a_t = fd.inner((self.E * total_strain_def(u_t)), total_strain_def(v_t))* self.rho_dep * fd.dx
-                # L_t = fd.inner((self.E * self.strain_therm), total_strain_def(v_t))* self.rho_dep * fd.dx
-                # sol = fd.Function(self.displace)
-                # fd.solve(a_t == L_t, sol, bcs=[self.mech_bc1, self.mech_bc2, self.mech_bc3], solver_parameters=distortion_solver_parameters)
+                a_t = fd.inner((self.E * total_strain_def(u_t)), total_strain_def(v_t))* self.rho_dep * fd.dx
+                L_t = fd.inner((self.E * self.strain_therm), total_strain_def(v_t))* self.rho_dep * fd.dx
+                sol = fd.Function(self.displace)
+                fd.solve(a_t == L_t, sol, bcs=[self.mech_bc1, self.mech_bc2, self.mech_bc3], solver_parameters=distortion_solver_parameters)
 
-                # self.u_tFunction.interpolate(sol * self.rho_dep)
-                # self.strain_total_increment.interpolate((fd.project(total_strain_def(sol)* self.rho_dep, self.DG0)) - self.strain_total)
-                # self.strain_total.interpolate(fd.project(total_strain_def(sol)* self.rho_dep, self.DG0))
-                # self.strain_mech_increment.interpolate(self.strain_total - self.strain_therm - self.strain_mech_increment)
-                # self.strain_mech.interpolate((self.strain_total - self.strain_therm) * self.rho_dep)
+                self.u_tFunction.interpolate(sol * self.rho_dep)
+                self.strain_total_increment.interpolate((fd.project(total_strain_def(sol)* self.rho_dep, self.DG0)) - self.strain_total)
+                self.strain_total.interpolate(fd.project(total_strain_def(sol)* self.rho_dep, self.DG0))
+                self.strain_mech_increment.interpolate(self.strain_total - self.strain_therm - self.strain_mech_increment)
+                self.strain_mech.interpolate((self.strain_total - self.strain_therm) * self.rho_dep)
 
                 self.u_tFile.write(self.u_tFunction)
                 self.strain_total_incrementFile.write(self.strain_total_increment)
