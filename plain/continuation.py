@@ -19,7 +19,7 @@ for i in range(1):
 
     if i == 0: ##### Compliance Objective; Volume constraint #####
         optimisationClass = OptimisationLoop(1, 0) 
-        optimisationClass.maximumNumberOfIterations = 30
+        optimisationClass.maximumNumberOfIterations = 18
         optimisationClass.pnorm = 8
     elif i == 1:##### Compliance Objective; Volume and p-norm stress constraint #####
         optimisationClass = OptimisationLoop(2, stressintegral)

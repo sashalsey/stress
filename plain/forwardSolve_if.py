@@ -35,7 +35,7 @@ class ForwardSolve:
         self.h = 100.0 # thermal convection coeff
         self.cp_0, self.cp_1 = 1e3, 500 # coeff specific heat capacity of air, titanium
         self.rho_material = 4500.0
-        self.t_heat = 30.0 # time between deposit and next layer
+        self.t_heat = 20.0 # time between deposit and next layer
         self.dt = 2.0 # timestep for t_heat
         
         # pseudo-density functional
@@ -54,7 +54,7 @@ class ForwardSolve:
         self.n = fd.FacetNormal(self.mesh)
 
     def Setup(self):
-        self.nx, self.ny = 200, 100
+        self.nx, self.ny = 100, 100
         self.lx, self.ly =  0.1, 0.05
         self.cellsize = self.lx / self.nx
         self.GenerateMesh()
@@ -216,62 +216,29 @@ class ForwardSolve:
                 'snes_atol': 1e-12,
                 'snes_max_it': 500}
 
-            def mechstraininit(self):
-                thermal_strain = self.alpha * (self.T_n1 - self.T_n) * self.rho_hat * Id
-                self.strain_therm_increment.interpolate(fd.project(thermal_strain, self.DG0))
-
-                self.strain_mech.interpolate(0 * self.strain_therm_increment)
-                self.strain_mechFile.write(self.strain_mech)
-
-                self.strain_total.interpolate(self.strain_mech)
-                self.strain_totalFile.write(self.strain_total)
-
-                u_t = fd.TrialFunction(self.displace)
-                v_t = fd.TestFunction(self.displace)
-
-                a_t = fd.inner((self.E * total_strain_def(u_t)), total_strain_def(v_t))* self.rho_dep * fd.dx # * self.rho_dep diverged!
-                L_t = fd.inner((self.E * self.strain_therm_increment), total_strain_def(v_t))* self.rho_dep * fd.dx
-
-                sol = fd.Function(self.displace)
-                fd.solve(a_t == L_t, sol, bcs=[self.mech_bc1], solver_parameters=distortion_solver_parameters)
-
-                # self.u_tFunction.interpolate(sol * self.rho_dep)
-                self.u_tFunction.interpolate(sol * 0)
-                self.u_tFile.write(self.u_tFunction)
-
             def distortion_solve(self):
                 u_t = fd.TrialFunction(self.displace)
                 v_t = fd.TestFunction(self.displace)
 
-                a_t = fd.inner((self.E * total_strain_def(u_t)), total_strain_def(v_t))* self.rho_dep * fd.dx # * self.rho_dep diverged!
-                L_t = fd.inner((self.E * self.strain_therm), total_strain_def(v_t))* self.rho_dep * fd.dx
-                # L_t = fd.inner((self.E * self.strain_therm_increment), total_strain_def(v_t))* self.rho_dep * fd.dx
-
+                #####INCREMENTAL#####
+                a_t = fd.inner((self.E * total_strain_def(u_t)), total_strain_def(v_t))* self.rho_dep * fd.dx
+                L_t = fd.inner((self.E * self.strain_therm_increment), total_strain_def(v_t))* self.rho_dep * fd.dx
                 sol = fd.Function(self.displace)
                 fd.solve(a_t == L_t, sol, bcs=[self.mech_bc1, self.mech_bc2, self.mech_bc3], solver_parameters=distortion_solver_parameters)
-
-                # self.u_tFunction.interpolate(sol * self.rho_dep)
-                self.u_tFunction.interpolate(self.u_tFunction + sol * self.rho_dep)
-                self.u_tFile.write(self.u_tFunction)
-
-                # print(f"Bottom right u_t {self.u_tFunction((self.lx, 0))}")
-                # print(f"Top right u_t {self.u_tFunction((self.lx, self.ly - 2 * self.cellsize))}")
-
-                self.strain_total_increment.interpolate(fd.project(total_strain_def(sol)* self.rho_dep, self.DG0))
-                self.strain_total_incrementFile.write(self.strain_total_increment)
-
-                # self.strain_total.interpolate(self.strain_total + self.strain_total_increment)
-                self.strain_total.interpolate(fd.project(total_strain_def(sol)* self.rho_dep, self.DG0))
-                self.strain_totalFile.write(self.strain_total)
                 
+                self.u_tFunction.interpolate(self.u_tFunction + sol * self.rho_dep)
+                self.strain_total_increment.interpolate(fd.project(total_strain_def(sol) * self.rho_dep, self.DG0))
+                self.strain_total.interpolate(self.strain_total + self.strain_total_increment)
                 self.strain_mech_increment.interpolate(self.strain_total_increment - self.strain_therm_increment)
+                self.strain_mech.interpolate(self.strain_mech + self.strain_mech_increment)
+
+                self.u_tFile.write(self.u_tFunction)
+                self.strain_total_incrementFile.write(self.strain_total_increment)
+                self.strain_totalFile.write(self.strain_total)
                 self.strain_mech_incrementFile.write(self.strain_mech_increment)
-
-                self.strain_mech.interpolate((self.strain_total - self.strain_therm) * self.rho_dep) 
                 self.strain_mechFile.write(self.strain_mech)
-
-                # self.stress_mech.interpolate(self.E * self.strain_mech)
-                # self.stress_mechFile.write(self.stress_mech)
+                self.stress_mech.interpolate(self.E * self.strain_mech)
+                self.stress_mechFile.write(self.stress_mech)
             
             def flatten_stuff(data_):
                 # data = data_.dat.data
@@ -320,10 +287,10 @@ class ForwardSolve:
             for lst in [max_strain_to, max_strain_me, max_strain_th, avg_strain_to, avg_strain_me, avg_strain_th, u_x_bottom_right, u_y_bottom_right, u_x_top_right, u_y_top_right, 
                         max_strain_toi, max_strain_mei, max_strain_thi, avg_strain_toi, avg_strain_mei, avg_strain_thi]:
                 lst.append(0)
-            mechstraininit(self)
 
-            n = 2
+            n = 5
             layer_height = self.ly / n
+            print("Layer height = ", layer_height)
             current_global_time = 0.0
 
             for i in range(n):
@@ -462,65 +429,95 @@ class ForwardSolve:
             # ge(left, right)
             #     A boolean expression (left >= right)
             
-            plt.figure(figsize=(15, 5))
+            # plt.figure(figsize=(15, 5))
 
-            plt.subplot(1, 3, 1)
-            plt.plot(time_steps, max_temps, 'r-')
-            plt.xlabel('Time [s]')
-            plt.ylabel('Max temperature [K]')
-            plt.grid(True)
+            # plt.subplot(1, 3, 1)
+            # plt.plot(time_steps, max_temps, 'r-')
+            # plt.xlabel('Time [s]')
+            # plt.ylabel('Max temperature [K]')
+            # plt.grid(True)
+
+            # # plt.subplot(1, 3, 2)
+            # # plt.plot(time_steps, max_strain_to, 'b-', label='Max Total Strain')
+            # # plt.plot(time_steps, max_strain_me, 'g--', label='Max Mechanical Strain')
+            # # plt.plot(time_steps, max_strain_th, 'm-', label='Max Thermal Strain')
+            # # plt.plot(time_steps, max_strain_ti, 'r:', label='Max Thermal Strain Increment')
+            # # plt.xlabel('Time [s]')
+            # # plt.ylabel('Max Strain')
+            # # plt.grid(True)
+            # # plt.legend()
 
             # plt.subplot(1, 3, 2)
-            # plt.plot(time_steps, max_strain_to, 'b-', label='Max Total Strain')
-            # plt.plot(time_steps, max_strain_me, 'g--', label='Max Mechanical Strain')
-            # plt.plot(time_steps, max_strain_th, 'm-', label='Max Thermal Strain')
-            # plt.plot(time_steps, max_strain_ti, 'r:', label='Max Thermal Strain Increment')
+            # plt.plot(time_steps, avg_strain_toi, 'b-', label='Avg Total Strain Increment')
+            # plt.plot(time_steps, avg_strain_mei, 'g--', label='Avg Mechanical Increment')
+            # plt.plot(time_steps, avg_strain_thi, 'r:', label='Avg Thermal Strain Increment')
             # plt.xlabel('Time [s]')
-            # plt.ylabel('Max Strain')
+            # plt.ylabel('Average Strain')
             # plt.grid(True)
             # plt.legend()
 
-            plt.subplot(1, 3, 2)
-            plt.plot(time_steps, avg_strain_toi, 'b-', label='Avg Total Strain Increment')
-            plt.plot(time_steps, avg_strain_mei, 'g--', label='Avg Mechanical Increment')
-            plt.plot(time_steps, avg_strain_thi, 'r:', label='Avg Thermal Strain Increment')
-            plt.xlabel('Time [s]')
-            plt.ylabel('Average Strain')
-            plt.grid(True)
-            plt.legend()
-
-            plt.subplot(1, 3, 3)
-            plt.plot(time_steps, avg_strain_to, 'b-', label='Avg Total Strain')
-            plt.plot(time_steps, avg_strain_me, 'g--', label='Avg Mechanical Strain')
-            plt.plot(time_steps, avg_strain_th, 'r:', label='Avg Thermal Strain')
-            plt.xlabel('Time [s]')
-            plt.ylabel('Average Strain')
-            plt.grid(True)
-            plt.legend()
-
-            plt.tight_layout()
-            plt.show()
-
-            # plt.figure()
-            # plt.plot(time_steps, max_strain_th, 'm-', label='Max Thermal Strain')
-            # plt.plot(time_steps, max_strain_ti, 'r:', label='Max Thermal Strain Increment')
+            # plt.subplot(1, 3, 3)
+            # plt.plot(time_steps, avg_strain_to, 'b-', label='Avg Total Strain')
+            # plt.plot(time_steps, avg_strain_me, 'g--', label='Avg Mechanical Strain')
+            # plt.plot(time_steps, avg_strain_th, 'r:', label='Avg Thermal Strain')
             # plt.xlabel('Time [s]')
-            # plt.ylabel('Max Strain')
+            # plt.ylabel('Average Strain')
             # plt.grid(True)
             # plt.legend()
+
+            # plt.tight_layout()
             # plt.show()
 
-            plt.figure()
-            plt.plot(time_steps, u_x_bottom_right, 'b-', label='u_x_bottom_right')
-            plt.plot(time_steps, u_y_bottom_right, 'g--', label='u_y_bottom_right')
-            plt.plot(time_steps, u_x_top_right, 'm-', label='u_x_top_right')
-            plt.plot(time_steps, u_y_top_right, 'r:', label='u_y_top_right')
-            plt.xlabel('Time [s]')
-            plt.ylabel('Displacement')
-            plt.grid(True)
-            plt.legend()
+            # # plt.figure()
+            # # plt.plot(time_steps, max_strain_th, 'm-', label='Max Thermal Strain')
+            # # plt.plot(time_steps, max_strain_ti, 'r:', label='Max Thermal Strain Increment')
+            # # plt.xlabel('Time [s]')
+            # # plt.ylabel('Max Strain')
+            # # plt.grid(True)
+            # # plt.legend()
+            # # plt.show()
 
-            plt.show()
+            # plt.figure()
+            # plt.plot(time_steps, u_x_bottom_right, 'b-', label='u_x_bottom_right')
+            # plt.plot(time_steps, u_y_bottom_right, 'g--', label='u_y_bottom_right')
+            # plt.plot(time_steps, u_x_top_right, 'm-', label='u_x_top_right')
+            # plt.plot(time_steps, u_y_top_right, 'r:', label='u_y_top_right')
+            # plt.xlabel('Time [s]')
+            # plt.ylabel('Displacement')
+            # plt.grid(True)
+            # plt.legend()
+
+            # plt.show()
+
+            def calculate_distortion_angle(u_bottom_right, u_top_right):
+                C_original = np.array([self.lx, 0])          # Bottom-right (original)
+                B_original = np.array([self.lx, self.ly/2])     # Top-right (original)
+                
+                C_distorted = C_original + u_bottom_right    # Bottom-right (distorted)
+                B_distorted = B_original + u_top_right       # Top-right (distorted)
+                
+                # Original edge vector (vertical: from C to B)
+                original_vector = B_original - C_original    # [0, ly]
+                
+                # Distorted edge vector (from C' to B')
+                distorted_vector = B_distorted - C_distorted
+                
+                # Compute angle
+                dot_product = np.dot(original_vector, distorted_vector)
+                original_magnitude = np.linalg.norm(original_vector)
+                distorted_magnitude = np.linalg.norm(distorted_vector)
+                
+                cos_theta = dot_product / (original_magnitude * distorted_magnitude)
+                angle_rad = np.arccos(cos_theta)
+                angle_deg = np.rad2deg(angle_rad)
+                
+                return angle_deg
+
+            u_bottom = np.array([self.u_tFunction((self.lx, 0))[0], self.u_tFunction((self.lx, 0))[1]])
+            u_top = np.array([self.u_tFunction((self.lx, self.ly - 2 * self.cellsize))[0], self.u_tFunction((self.lx, self.ly - 2 * self.cellsize))[1]])
+
+            angle = calculate_distortion_angle(u_bottom, u_top)
+            print(f"Distortion angle: {angle:.4f} degrees")
 
             # print(f"Bottom right u_t {self.u_tFunction((self.lx, 0)):.2e}")
             # print(f"Top right u_t {self.u_tFunction((self.lx, self.ly)):.2e}")
