@@ -25,7 +25,7 @@ Id = fd.Identity(mesh.geometric_dimension())
 helmholtzFilterRadius = 1 * (meshVolume / mesh.num_cells()) ** (1 / mesh.cell_dimension())
 
 ##### function spaces #####
-densityspace = fd.FunctionSpace(mesh, "CG", 2)
+densityspace = fd.FunctionSpace(mesh, "CG", 1)
 displace = fd.VectorFunctionSpace(mesh, "CG", 2)
 
 ##### functions anf files #####
@@ -55,8 +55,49 @@ beta0, eta0 = 8.0, 0.5
 mech_bc = fd.DirichletBC(displace, fd.Constant((0.0, 0.0)), 3)
 
 ##################################################
-# ===== 2) DEF OBJ / GRAD (In = numpy array) =====
+##### Thermal shit
+number_of_layers = 4                                       # number of layers
+layer_height = ly / number_of_layers                       # building in y direction
 
+templace = fd.FunctionSpace(mesh, "CG", 1)
+CG1 = fd.TensorFunctionSpace(mesh, "CG", 1)
+rho_dep =fd.Function(densityspace)
+T_n_1 = fd.Function(templace, name="T_(n-1)")
+T_n = fd.Function(templace, name="T_n")
+u_tFunction = fd.Function(displace, name="u_t") # displacement due to in-process thermal load
+strain_therm_increment = fd.Function(CG1, name="strain_therm_increment")
+strain_therm_previous = fd.Function(CG1, name="strain_therm_previous")
+strain_therm_current = fd.Function(CG1, name="strain_therm_current")
+
+k_rho = fd.Function(densityspace, name="k_rho")
+cp = fd.Function(densityspace, name="cp")
+alpha = fd.Function(densityspace, name="alpha")
+
+k_0, k_1 = 0.7, 17.0                       # thermal conduction coeff of air, titanium
+alpha_0, alpha_1 = 3.4e-12, 8.6e-6            # linear thermal expansion coeff of air, titanium
+h_conv = 100.0                                   # thermal convection coeff
+cp_0, cp_1 = 1000, 550                       # specific heat capacity of air, titanium
+rho_air, rho_material = 1.2, 4500.0
+T_atm, T_hot = fd.Constant(20.0 + 273.0), fd.Constant(1660.0 + 273.0) # temperature atmospheric, heating 
+
+distortion_bcs = fd.DirichletBC(displace, fd.Constant((0.0, 0.0)), 3)
+temp_bc1 = fd.DirichletBC(templace, (T_atm), 3)
+dt = 1.0
+beta1 = 100.0
+def total_strain_def(u): return 0.5 * (fd.grad(u) + fd.grad(u).T)
+distortion_solver_parameters = {
+    'ksp_type': 'preonly',        # Use direct solver (recommended for small problems)
+    'pc_type': 'lu',              # LU factorization
+    'pc_factor_mat_solver_type': 'mumps',  # Fast direct solver
+    'mat_mumps_icntl_24': 1,      # Enable error analysis in MUMPS
+    'ksp_rtol': 1e-12,            # Reduced relative tolerance
+    'ksp_atol': 1e-12,            # Absolute tolerance
+    'ksp_max_it': 500,           # Maximum iterations
+    'snes_rtol': 1e-12,           # Nonlinear solver tolerances
+    'snes_atol': 1e-12,
+    'snes_max_it': 500}
+
+# ===== 2) DEF OBJ / GRAD (In = numpy array) =====
 def obj_grad(In: np.ndarray):
     fda.continue_annotation()
 
@@ -74,7 +115,7 @@ def obj_grad(In: np.ndarray):
     fd.solve(a_h == L_h, rho_)
 
     #### Projection Filter #####
-    rho_hat = (fd.tanh(beta0 * eta0) + fd.tanh(beta0 * (rho_ - eta0))) / (fd.tanh(beta0 * eta0) + fd.tanh(beta0 * (1 - eta0)))
+    rho_hat = rho_ #(fd.tanh(beta0 * eta0) + fd.tanh(beta0 * (rho_ - eta0))) / (fd.tanh(beta0 * eta0) + fd.tanh(beta0 * (1 - eta0)))
     rho_hatFunction.assign(fd.project(rho_hat, densityspace))
 
     ##### Compliance: Linear Elasticity #####
@@ -107,10 +148,67 @@ def obj_grad(In: np.ndarray):
     djdrho = (fda.compute_gradient(j_adj,   fda.Control(rho_control)).riesz_representation('L2').vector().get_local())
     dc1drho = (fda.compute_gradient(vol_adj, fda.Control(rho_control)).riesz_representation('L2').vector().get_local())
 
-    c = np.array([vol_adj])
-    dcdrho_flat = dc1drho
+    ###### Thermal shit again
+    T_n_1.interpolate(fd.Constant(T_atm)) # T_(n-1) previous time step
+    T_n.interpolate(fd.Constant(T_atm))  # T_n current time step
 
-    # tape.clear_tape()
+    for i in range(number_of_layers):
+        T_n_1.interpolate(T_n) # previous
+        layer_height_dep = layer_height * (i + 1)
+        rho_dep.interpolate(0.5 * (1 + fd.tanh(beta1 * ( - y + layer_height_dep))) * rho_hat)
+
+        k_rho.interpolate(k_0 + (k_1 - k_0) * (rho_dep))
+        cp.interpolate(rho_air * cp_0 + (rho_material * cp_1 - rho_air * cp_0) * (rho_dep))
+        alpha.interpolate(alpha_0 + (alpha_1 - alpha_0) * (rho_dep))
+        
+        a, b = layer_height_dep - layer_height, layer_height_dep
+        T_n.interpolate(T_n_1 + (T_hot - T_n_1) * (0.5*(1+fd.tanh(beta1*(y-a)))) * (-0.5*(1+fd.tanh(beta1*(y-b))) + 1) * (0.5*(1+fd.tanh(beta1*(rho_dep - 0.5)))) )
+
+        w = fd.TestFunction(templace)
+        Trial_n1 = fd.TrialFunction(templace)
+        F = (cp * (Trial_n1 - T_n) * w * fd.dx + dt * k_rho * fd.dot(fd.grad(Trial_n1), fd.grad(w)) * fd.dx) 
+        F += dt * h_conv * (Trial_n1 - T_atm) * w * fd.ds(1)
+        F += dt * h_conv * (Trial_n1 - T_atm) * w * fd.ds(2)
+        F += dt * h_conv * (Trial_n1 - T_atm) * w * fd.ds(4)
+        sol_Te = fd.Function(templace)
+        a_t = fd.lhs(F)
+        L_t = fd.rhs(F)
+        fd.solve(a_t == L_t, sol_Te, bcs=[temp_bc1])
+        T_n_1.interpolate(T_n) # previous
+        T_n.interpolate(sol_Te) # new / current
+
+        thermal_strain = alpha * (sol_Te - T_n_1) * rho_dep * Id #thermal_strain_solve(T_n_1, T_n, rho_dep, alpha)
+        strain_therm_increment.interpolate(thermal_strain)
+        strain_therm_previous.interpolate(strain_therm_current)
+        strain_therm_current.interpolate(strain_therm_previous + strain_therm_increment)
+
+    # Cool to ref
+    T_n_1.interpolate(T_n)
+    T_n.interpolate(T_atm)
+    alpha.interpolate(alpha_0 + (alpha_1 - alpha_0) * (rho_hat))
+    thermal_strain = alpha * (T_n - T_n_1) * rho_hat * Id #thermal_strain_solve(T_n_1, T_n, rho_dep, alpha)
+    strain_therm_increment.interpolate(thermal_strain)
+    strain_therm_previous.interpolate(strain_therm_current)
+    strain_therm_current.interpolate(strain_therm_previous + strain_therm_increment)
+
+    # Distortion Solve
+    u_t = fd.TrialFunction(displace)
+    v_t = fd.TestFunction(displace)
+    a_t = fd.inner((E * total_strain_def(u_t)), total_strain_def(v_t)) * fd.dx
+    L_t = fd.inner((E * strain_therm_current), total_strain_def(v_t)) * fd.dx
+    sol_t = fd.Function(displace)
+    fd.solve(a_t == L_t, sol_t, bcs=distortion_bcs, solver_parameters=distortion_solver_parameters)
+    u_tFunction.interpolate(sol_t)
+
+    c2_t = fd.assemble(fd.sqrt((1e6*sol_t[0])**2) * fd.ds(2))
+    
+    dc2drho = (fda.compute_gradient(c2_t, fda.Control(rho_control)).riesz_representation('L2').vector().get_local())
+    c = np.array([vol_adj, c2_t]) #, dtype=float
+    dcdrho = np.vstack([dc1drho, dc2drho])
+    dcdrho_flat = dcdrho.flatten()
+
+
+    tape.clear_tape()
     return j_adj, djdrho, c, dcdrho_flat
 
 #################################################
